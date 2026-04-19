@@ -151,9 +151,13 @@ admin.get('/api/admin/clients/:id', async (c) => {
       .bind(id)
       .first<{ display_name: string; hourly_rate_cents: number | null; notes: string | null; archived_at: number | null }>();
 
-    const [subs, invoices] = await Promise.all([
+    const [subs, invoices, timeRows] = await Promise.all([
       stripe.subscriptions.list({ customer: id, status: 'all', limit: 20, expand: ['data.default_payment_method'] }),
       stripe.invoices.list({ customer: id, limit: 20 }),
+      c.env.DB
+        .prepare(`SELECT * FROM time_entries WHERE customer_id = ?1 AND status IN ('draft','pushed','billed') ORDER BY entry_date DESC, created_at DESC LIMIT 200`)
+        .bind(id)
+        .all<any>(),
     ]);
 
     const productIds = new Set<string>();
@@ -180,6 +184,9 @@ admin.get('/api/admin/clients/:id', async (c) => {
     subscriptions: subs.data.map((s) => ({
       id: s.id,
       status: s.status,
+      paused: s.pause_collection != null,
+      pause_behavior: s.pause_collection?.behavior ?? null,
+      resumes_at: s.pause_collection?.resumes_at ?? null,
       current_period_end: s.items.data[0]?.current_period_end ?? null,
       items: s.items.data.map((i) => {
         const prodId = typeof i.price.product === 'string' ? i.price.product : null;
@@ -191,6 +198,20 @@ admin.get('/api/admin/clients/:id', async (c) => {
           interval: i.price.recurring?.interval,
         };
       }),
+    })),
+    time_entries: (timeRows.results ?? []).map((r: any) => ({
+      id: r.id,
+      customer_id: r.customer_id,
+      minutes: r.minutes,
+      description: r.description,
+      entry_date: r.entry_date,
+      billable: r.billable === 1,
+      status: r.status,
+      stripe_invoice_item_id: r.stripe_invoice_item_id,
+      stripe_invoice_id: r.stripe_invoice_id,
+      pushed_at: r.pushed_at,
+      billed_at: r.billed_at,
+      created_at: r.created_at,
     })),
     invoices: invoices.data.map((inv) => ({
       id: inv.id,
@@ -213,6 +234,7 @@ admin.patch('/api/admin/clients/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json<{
     display_name?: string;
+    email?: string;
     delivery_mode?: DeliveryMode;
     hourly_rate_cents?: number | null;
     notes?: string | null;
@@ -221,11 +243,22 @@ admin.patch('/api/admin/clients/:id', async (c) => {
   if (body.delivery_mode && !VALID_DELIVERY_MODES.includes(body.delivery_mode)) {
     return c.json({ error: 'invalid delivery_mode' }, 400 as any);
   }
+  if (body.email !== undefined && body.email !== null) {
+    if (typeof body.email !== 'string' || !/^\S+@\S+\.\S+$/.test(body.email.trim())) {
+      return c.json({ error: 'invalid email' }, 400 as any);
+    }
+  }
+  if (body.hourly_rate_cents != null) {
+    if (!Number.isInteger(body.hourly_rate_cents) || body.hourly_rate_cents < 0) {
+      return c.json({ error: 'hourly_rate_cents must be a non-negative integer' }, 400 as any);
+    }
+  }
 
   const stripe = stripeClient(c.env.STRIPE_API_KEY);
-  if (body.display_name !== undefined || body.delivery_mode !== undefined) {
+  if (body.display_name !== undefined || body.delivery_mode !== undefined || body.email !== undefined) {
     const updates: Stripe.CustomerUpdateParams = {};
     if (body.display_name !== undefined) updates.name = body.display_name;
+    if (body.email !== undefined) updates.email = body.email?.trim() ?? undefined;
     if (body.delivery_mode !== undefined) updates.metadata = { delivery_mode: body.delivery_mode };
     await stripe.customers.update(id, updates);
   }
@@ -404,6 +437,53 @@ admin.post('/api/admin/clients/:id/invoice', async (c) => {
     if (itemId) {
       try { await stripe.invoiceItems.del(itemId); } catch {}
     }
+    throw err;
+  }
+});
+
+admin.post('/api/admin/subscriptions/:id/pause', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json<{ behavior?: 'keep_as_draft' | 'mark_uncollectible' | 'void'; resumes_at?: number | null }>().catch(() => ({} as any));
+  const behavior = body.behavior ?? 'void';
+  if (!['keep_as_draft', 'mark_uncollectible', 'void'].includes(behavior)) {
+    return c.json({ error: 'invalid behavior' }, 400 as any);
+  }
+  const stripe = stripeClient(c.env.STRIPE_API_KEY);
+  const sub = await stripe.subscriptions.update(id, {
+    pause_collection: {
+      behavior,
+      ...(body.resumes_at ? { resumes_at: body.resumes_at } : {}),
+    },
+  });
+  return c.json({ id: sub.id, status: sub.status, pause_collection: sub.pause_collection });
+});
+
+admin.post('/api/admin/subscriptions/:id/resume', async (c) => {
+  const id = c.req.param('id');
+  const stripe = stripeClient(c.env.STRIPE_API_KEY);
+  const sub = await stripe.subscriptions.update(id, {
+    pause_collection: '',
+  } as any);
+  return c.json({ id: sub.id, status: sub.status, pause_collection: sub.pause_collection });
+});
+
+admin.post('/api/admin/invoices/:id/mark-paid', async (c) => {
+  const id = c.req.param('id');
+  const log = createAxiomLogger(c.env, {
+    component: 'admin.mark_paid',
+    fields: { invoice_id: id },
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+  });
+  const body = await c.req.json<{ payment_method?: 'check' | 'bank_transfer' | 'cash' | 'other' }>().catch(() => ({} as any));
+  const stripe = stripeClient(c.env.STRIPE_API_KEY);
+  try {
+    const invoice = await stripe.invoices.pay(id, {
+      paid_out_of_band: true,
+    });
+    log.info('invoice_marked_paid', { invoice_id: id, amount_paid: invoice.amount_paid, payment_method: body.payment_method ?? 'other' });
+    return c.json({ id: invoice.id, status: invoice.status, amount_paid: invoice.amount_paid, paid_out_of_band: true });
+  } catch (err) {
+    log.error('mark_paid_failed', describeError(err));
     throw err;
   }
 });

@@ -23,6 +23,14 @@ function initStripe(apiKey: string) {
 export interface CompanyInfo {
   name: string;
   address: string;
+  addressParts?: {
+    line1?: string;
+    line2?: string;
+    city?: string;
+    state?: string;
+    postal_code?: string;
+    country?: string;
+  };
   email: string;
   logo: string;
   vatId: string;
@@ -134,8 +142,27 @@ export async function getCompanyInfo(c: any): Promise<CompanyInfo> {
   };
 
   companyInfo.name = account.business_profile?.name || 'Not Set';
-  companyInfo.address = (account.business_profile?.support_address && account.country) ? 
-    `${account.business_profile.support_address.line1}, ${account.business_profile?.support_address?.line2 || ''}, ${account.business_profile.support_address.city}, ${account.business_profile.support_address.postal_code}, ${getCountryName(account.business_profile.support_address.country || 'US')}` : 'Not Set';
+  const supportAddr = account.business_profile?.support_address;
+  if (supportAddr) {
+    companyInfo.addressParts = {
+      line1: supportAddr.line1 ?? undefined,
+      line2: supportAddr.line2 ?? undefined,
+      city: supportAddr.city ?? undefined,
+      state: supportAddr.state ?? undefined,
+      postal_code: supportAddr.postal_code ?? undefined,
+      country: supportAddr.country ?? account.country ?? undefined,
+    };
+    const parts: string[] = [];
+    if (supportAddr.line1) parts.push(supportAddr.line1);
+    if (supportAddr.line2) parts.push(supportAddr.line2);
+    const cityLine = [supportAddr.city, supportAddr.state, supportAddr.postal_code].filter(Boolean).join(' ');
+    if (cityLine) parts.push(cityLine);
+    const countryCode = supportAddr.country ?? account.country;
+    if (countryCode) parts.push(getCountryName(countryCode));
+    companyInfo.address = parts.length > 0 ? parts.join(', ') : 'Not Set';
+  } else {
+    companyInfo.address = 'Not Set';
+  }
   companyInfo.email = account.business_profile?.support_email || 'Not Set';
   companyInfo.brandColor = account.settings?.branding?.primary_color || '#4f46e5';
   companyInfo.secondaryColor = account.settings?.branding?.secondary_color || '#f3f4f6';

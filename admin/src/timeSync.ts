@@ -1,6 +1,9 @@
 import { api } from './api';
-import { listUnsynced, markSynced } from './timeDB';
+import { listPending as listDBPending, listUnsynced, markSynced } from './timeDB';
 import { reportClientError } from './errorReporting';
+
+export type TimeEntryStatus = 'draft' | 'pushed' | 'billed' | 'voided';
+export const listPending = listDBPending;
 
 let syncInFlight = false;
 
