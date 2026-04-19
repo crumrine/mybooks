@@ -4,6 +4,11 @@ import type { AppBindings } from './index';
 import { requireSession, AuthEnv, SessionClaims } from './auth';
 import { parseDeliveryMode, type DeliveryMode } from './deliveryMode';
 
+const VALID_DELIVERY_MODES: readonly DeliveryMode[] = ['auto_charge_silent', 'pdf_invoice'];
+const VALID_INTERVALS = ['day', 'week', 'month', 'year'] as const;
+type SubscriptionInterval = (typeof VALID_INTERVALS)[number];
+const STRIPE_MIN_CENTS = 50;
+
 let cachedStripe: Stripe | null = null;
 function stripeClient(apiKey: string): Stripe {
   if (!cachedStripe) cachedStripe = new Stripe(apiKey, { apiVersion: '2025-08-27.basil', typescript: true });
@@ -92,6 +97,9 @@ admin.post('/api/admin/clients', async (c) => {
 
   if (!body.email || !body.display_name) {
     return c.json({ error: 'email and display_name are required' }, 400 as any);
+  }
+  if (body.delivery_mode && !VALID_DELIVERY_MODES.includes(body.delivery_mode)) {
+    return c.json({ error: 'invalid delivery_mode' }, 400 as any);
   }
 
   const delivery_mode: DeliveryMode = body.delivery_mode ?? 'pdf_invoice';
@@ -183,11 +191,15 @@ admin.patch('/api/admin/clients/:id', async (c) => {
     notes?: string | null;
   }>();
 
+  if (body.delivery_mode && !VALID_DELIVERY_MODES.includes(body.delivery_mode)) {
+    return c.json({ error: 'invalid delivery_mode' }, 400 as any);
+  }
+
   const stripe = stripeClient(c.env.STRIPE_API_KEY);
-  if (body.display_name || body.delivery_mode) {
+  if (body.display_name !== undefined || body.delivery_mode !== undefined) {
     const updates: Stripe.CustomerUpdateParams = {};
-    if (body.display_name) updates.name = body.display_name;
-    if (body.delivery_mode) updates.metadata = { delivery_mode: body.delivery_mode };
+    if (body.display_name !== undefined) updates.name = body.display_name;
+    if (body.delivery_mode !== undefined) updates.metadata = { delivery_mode: body.delivery_mode };
     await stripe.customers.update(id, updates);
   }
 
@@ -221,46 +233,66 @@ admin.post('/api/admin/subscriptions', async (c) => {
     customer_id: string;
     amount_cents: number;
     currency?: string;
-    interval?: 'month' | 'year' | 'week' | 'day';
+    interval?: SubscriptionInterval;
     product_name: string;
     description?: string;
   }>();
 
-  if (!body.customer_id || !body.amount_cents || !body.product_name) {
-    return c.json({ error: 'customer_id, amount_cents, product_name required' }, 400 as any);
+  if (!body.customer_id || !body.product_name) {
+    return c.json({ error: 'customer_id and product_name are required' }, 400 as any);
+  }
+  if (typeof body.amount_cents !== 'number' || !Number.isInteger(body.amount_cents) || body.amount_cents < STRIPE_MIN_CENTS) {
+    return c.json({ error: `amount_cents must be an integer >= ${STRIPE_MIN_CENTS}` }, 400 as any);
+  }
+  const interval: SubscriptionInterval = body.interval ?? 'month';
+  if (!VALID_INTERVALS.includes(interval)) {
+    return c.json({ error: 'invalid interval' }, 400 as any);
+  }
+  const currency = (body.currency ?? 'usd').toLowerCase();
+  if (!/^[a-z]{3}$/.test(currency)) {
+    return c.json({ error: 'invalid currency code' }, 400 as any);
   }
 
   const stripe = stripeClient(c.env.STRIPE_API_KEY);
-  const product = await stripe.products.create({
-    name: body.product_name,
-    description: body.description,
-  });
-  const price = await stripe.prices.create({
-    product: product.id,
-    unit_amount: body.amount_cents,
-    currency: body.currency ?? 'usd',
-    recurring: { interval: body.interval ?? 'month' },
-  });
-  const sub = await stripe.subscriptions.create({
-    customer: body.customer_id,
-    items: [{ price: price.id }],
-    payment_behavior: 'default_incomplete',
-    expand: ['latest_invoice.confirmation_secret', 'pending_setup_intent'],
-  });
+  let product: Stripe.Product | null = null;
+  let price: Stripe.Price | null = null;
+  try {
+    product = await stripe.products.create({ name: body.product_name, description: body.description });
+    price = await stripe.prices.create({
+      product: product.id,
+      unit_amount: body.amount_cents,
+      currency,
+      recurring: { interval },
+    });
+    const sub = await stripe.subscriptions.create({
+      customer: body.customer_id,
+      items: [{ price: price.id }],
+      payment_behavior: 'default_incomplete',
+      expand: ['latest_invoice.confirmation_secret', 'pending_setup_intent'],
+    });
 
-  return c.json(
-    {
-      id: sub.id,
-      status: sub.status,
-      product_id: product.id,
-      price_id: price.id,
-      latest_invoice:
-        typeof sub.latest_invoice === 'object' && sub.latest_invoice
-          ? { id: sub.latest_invoice.id, status: sub.latest_invoice.status, hosted_invoice_url: sub.latest_invoice.hosted_invoice_url }
-          : sub.latest_invoice,
-    },
-    201 as any,
-  );
+    return c.json(
+      {
+        id: sub.id,
+        status: sub.status,
+        product_id: product.id,
+        price_id: price.id,
+        latest_invoice:
+          typeof sub.latest_invoice === 'object' && sub.latest_invoice
+            ? { id: sub.latest_invoice.id, status: sub.latest_invoice.status, hosted_invoice_url: sub.latest_invoice.hosted_invoice_url }
+            : sub.latest_invoice,
+      },
+      201 as any,
+    );
+  } catch (err) {
+    if (price) {
+      try { await stripe.prices.update(price.id, { active: false }); } catch {}
+    }
+    if (product) {
+      try { await stripe.products.update(product.id, { active: false }); } catch {}
+    }
+    throw err;
+  }
 });
 
 admin.get('/api/admin/invoices', async (c) => {

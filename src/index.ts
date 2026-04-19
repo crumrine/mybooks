@@ -28,28 +28,34 @@ const app = new Hono<{ Bindings: AppBindings }>();
 
 app.use('*', logger());
 
-function requireAdminToken(c: any): Response | null {
+async function requireAdminToken(c: any): Promise<Response | null> {
   const expected = c.env.ADMIN_API_TOKEN;
   if (!expected) {
     return c.json({ error: 'ADMIN_API_TOKEN not configured' }, 503 as any);
   }
   const header = c.req.header('authorization') ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!token || !timingSafeEqual(token, expected)) {
+  if (!token || !(await timingSafeEqual(token, expected))) {
     return c.json({ error: 'Unauthorized' }, 401 as any);
   }
   return null;
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
+async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(a)),
+    crypto.subtle.digest('SHA-256', enc.encode(b)),
+  ]);
+  const av = new Uint8Array(da);
+  const bv = new Uint8Array(db);
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+  for (let i = 0; i < av.length; i++) diff |= av[i] ^ bv[i];
+  return diff === 0 && a.length === b.length;
 }
 
 app.post('/api/send-invoice', async (c) => {
-  const unauthorized = requireAdminToken(c);
+  const unauthorized = await requireAdminToken(c);
   if (unauthorized) return unauthorized;
 
   try {

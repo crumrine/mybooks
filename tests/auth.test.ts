@@ -31,21 +31,25 @@ class FakeStmt {
       this.db.store.set(hash, { email, expires_at: expiresAt, consumed_at: null, created_at: createdAt });
       return { meta: { changes: 1 } };
     }
-    if (s.startsWith('UPDATE auth_challenges SET consumed_at')) {
-      const [hash, consumedAt] = this.args;
-      const row = this.db.store.get(hash);
-      if (!row || row.consumed_at !== null) return { meta: { changes: 0 } };
-      row.consumed_at = consumedAt;
-      return { meta: { changes: 1 } };
-    }
     return { meta: { changes: 0 } };
   }
   async first<T>() {
     const s = this.sql.replace(/\s+/g, ' ').trim();
-    if (s.startsWith('SELECT email, expires_at, consumed_at FROM auth_challenges')) {
+    if (s.startsWith('UPDATE auth_challenges SET consumed_at')) {
+      const [hash, now] = this.args;
+      const row = this.db.store.get(hash);
+      if (!row || row.consumed_at !== null || row.expires_at <= now) return null;
+      row.consumed_at = now;
+      return { email: row.email } as T;
+    }
+    if (s.startsWith('SELECT expires_at, consumed_at FROM auth_challenges')) {
       const [hash] = this.args;
       const row = this.db.store.get(hash);
-      return (row ?? null) as T | null;
+      if (!row) return null;
+      return { expires_at: row.expires_at, consumed_at: row.consumed_at } as T;
+    }
+    if (s.startsWith('SELECT COUNT(*) as n FROM auth_challenges')) {
+      return { n: 0 } as T;
     }
     return null;
   }

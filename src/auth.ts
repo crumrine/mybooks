@@ -125,19 +125,29 @@ export interface ConsumeResult {
 
 export async function consumeChallenge(db: D1Database, token: string, now = Date.now()): Promise<ConsumeResult> {
   const hash = await hashChallengeToken(token);
-  const row = await db
-    .prepare('SELECT email, expires_at, consumed_at FROM auth_challenges WHERE token_hash = ?1')
-    .bind(hash)
-    .first<{ email: string; expires_at: number; consumed_at: number | null }>();
-  if (!row) return { ok: false, reason: 'not_found' };
-  if (row.consumed_at !== null) return { ok: false, reason: 'already_used' };
-  if (row.expires_at <= now) return { ok: false, reason: 'expired' };
-  const result = await db
-    .prepare('UPDATE auth_challenges SET consumed_at = ?2 WHERE token_hash = ?1 AND consumed_at IS NULL')
+
+  const claimed = await db
+    .prepare(
+      `UPDATE auth_challenges
+       SET consumed_at = ?2
+       WHERE token_hash = ?1
+         AND consumed_at IS NULL
+         AND expires_at > ?2
+       RETURNING email`,
+    )
     .bind(hash, now)
-    .run();
-  if ((result.meta?.changes ?? 0) === 0) return { ok: false, reason: 'already_used' };
-  return { ok: true, email: row.email };
+    .first<{ email: string }>();
+
+  if (claimed) return { ok: true, email: claimed.email };
+
+  const status = await db
+    .prepare('SELECT expires_at, consumed_at FROM auth_challenges WHERE token_hash = ?1')
+    .bind(hash)
+    .first<{ expires_at: number; consumed_at: number | null }>();
+
+  if (!status) return { ok: false, reason: 'not_found' };
+  if (status.consumed_at !== null) return { ok: false, reason: 'already_used' };
+  return { ok: false, reason: 'expired' };
 }
 
 export function buildSessionCookie(token: string, maxAgeSeconds = SESSION_TTL_SECONDS): string {
@@ -157,10 +167,12 @@ export function readSessionCookie(cookieHeader: string | null | undefined): stri
   return null;
 }
 
+const MIN_SECRET_LENGTH = 32;
+
 export function requireSession(): MiddlewareHandler<{ Bindings: AuthEnv; Variables: { session: SessionClaims } }> {
   return async (c, next) => {
     const env = c.env as AuthEnv;
-    if (!env.AUTH_SECRET || !env.ADMIN_EMAIL) {
+    if (!env.AUTH_SECRET || env.AUTH_SECRET.length < MIN_SECRET_LENGTH || !env.ADMIN_EMAIL) {
       return c.json({ error: 'Auth not configured' }, 503 as any);
     }
     const token = readSessionCookie(c.req.header('cookie'));

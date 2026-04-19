@@ -32,6 +32,11 @@ auth.post('/api/auth/request', async (c) => {
     return c.json({ error: 'email required' }, 400 as any);
   }
 
+  const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+  if (!(await allowAuthRequest(env.DB, ip, requested))) {
+    return c.json({ error: 'Too many requests' }, 429 as any);
+  }
+
   if (requested === adminEmail) {
     const challenge = await issueChallenge(env.DB, adminEmail);
     const origin = new URL(c.req.url).origin;
@@ -43,10 +48,37 @@ auth.post('/api/auth/request', async (c) => {
       console.error('Failed to send magic-link email:', err);
       return c.json({ error: 'Unable to send magic link' }, 502 as any);
     }
+  } else {
+    await sleepForTimingParity();
   }
 
   return c.json({ ok: true });
 });
+
+const AUTH_REQUEST_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_REQUEST_MAX = 5;
+
+async function allowAuthRequest(db: D1Database, ip: string, email: string): Promise<boolean> {
+  const now = Date.now();
+  const since = now - AUTH_REQUEST_WINDOW_MS;
+  const key = `${ip}|${email.toLowerCase()}`;
+  try {
+    const row = await db
+      .prepare('SELECT COUNT(*) as n FROM auth_challenges WHERE created_at > ?1 AND email = ?2')
+      .bind(since, email.toLowerCase())
+      .first<{ n: number }>();
+    if ((row?.n ?? 0) >= AUTH_REQUEST_MAX) return false;
+  } catch {
+    /* if D1 fails, fail open so auth still works */
+  }
+  void key;
+  return true;
+}
+
+async function sleepForTimingParity(): Promise<void> {
+  const ms = 200 + Math.floor(Math.random() * 150);
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 auth.get('/api/auth/callback', async (c) => {
   const env = c.env;
@@ -58,9 +90,13 @@ auth.get('/api/auth/callback', async (c) => {
 
   const result = await consumeChallenge(env.DB, token);
   if (!result.ok) {
+    const label =
+      result.reason === 'expired' ? 'expired'
+      : result.reason === 'already_used' ? 'already used'
+      : 'invalid';
     return c.html(
       `<!doctype html><html><body style="font-family:-apple-system,sans-serif;background:#0a0a0a;color:#e5e5e5;min-height:100vh;display:flex;align-items:center;justify-content:center">
-      <div style="text-align:center"><h1 style="color:#ef4444">Link ${result.reason === 'expired' ? 'expired' : result.reason === 'already_used' ? 'already used' : 'invalid'}</h1><p><a href="/admin/" style="color:#6366f1">Request a new sign-in link</a></p></div></body></html>`,
+      <div style="text-align:center"><h1 style="color:#ef4444">Link ${label}</h1><p><a href="/admin/" style="color:#6366f1">Request a new sign-in link</a></p></div></body></html>`,
       401 as any,
     );
   }
