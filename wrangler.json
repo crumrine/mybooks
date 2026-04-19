@@ -17,18 +17,11 @@
   "browser": {
     "binding": "MYBROWSER"
   },
-  "kv_namespaces": [
-    {
-      "binding": "INVOICE_STATE",
-      "id": "replace-with-kv-id",
-      "preview_id": "replace-with-kv-preview-id"
-    }
-  ],
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "mybooks",
-      "database_id": "replace-with-d1-id"
+      "database_id": "b1c37a41-1c38-4fc3-939e-e016c285abc4"
     }
   ],
   "triggers": {
