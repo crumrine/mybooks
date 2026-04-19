@@ -8,6 +8,7 @@ export interface WebhookEnv {
   STRIPE_API_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
   APP_DOMAIN: string;
+  DB: D1Database;
 }
 
 let cachedStripe: Stripe | null = null;
@@ -61,6 +62,11 @@ export async function handleStripeWebhook(c: Context<{ Bindings: any }>): Promis
 
   const event = verification.event!;
 
+  const firstTime = await recordEvent(env.DB, event.id, event.type);
+  if (!firstTime) {
+    return c.json({ message: 'Duplicate event, already processed' }, 200 as any);
+  }
+
   if (event.type === 'charge.succeeded') {
     const charge = event.data.object as Stripe.Charge;
     const customerId = typeof charge.customer === 'string' ? charge.customer : charge.customer?.id;
@@ -83,6 +89,19 @@ export async function handleStripeWebhook(c: Context<{ Bindings: any }>): Promis
   }
 
   return c.json({ message: `Ignored event ${event.type}` }, 200 as any);
+}
+
+async function recordEvent(db: D1Database, id: string, type: string): Promise<boolean> {
+  try {
+    const result = await db
+      .prepare('INSERT OR IGNORE INTO webhook_events (id, type, received_at) VALUES (?1, ?2, ?3)')
+      .bind(id, type, Date.now())
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
+  } catch (err) {
+    console.error('Failed to record webhook event, proceeding anyway:', err);
+    return true;
+  }
 }
 
 async function loadCustomerMetadata(apiKey: string, customerId: string): Promise<Record<string, string> | null> {

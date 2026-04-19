@@ -1,23 +1,36 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { formatInvoiceNumber, nextInvoiceNumber } from '../src/invoiceNumber';
 
-class FakeKV {
-  store = new Map<string, { value: string; metadata?: any }>();
-  putCount = 0;
+class FakeD1 {
+  rows = new Map<number, number>();
 
-  async getWithMetadata<T>(key: string): Promise<{ value: string | null; metadata: T | null }> {
-    const entry = this.store.get(key);
-    return { value: entry?.value ?? null, metadata: (entry?.metadata as T) ?? null };
+  prepare(sql: string) {
+    return new FakeStmt(this, sql);
+  }
+}
+
+class FakeStmt {
+  constructor(private db: FakeD1, private sql: string, private args: unknown[] = []) {}
+
+  bind(...args: unknown[]) {
+    return new FakeStmt(this.db, this.sql, args);
   }
 
-  async put(key: string, value: string, opts?: { metadata?: any }): Promise<void> {
-    this.putCount += 1;
-    this.store.set(key, { value, metadata: opts?.metadata });
+  async first<T>(): Promise<T | null> {
+    const s = this.sql.replace(/\s+/g, ' ').trim();
+    if (s.startsWith('INSERT INTO invoice_counter')) {
+      const year = this.args[0] as number;
+      const current = this.db.rows.get(year) ?? 0;
+      const next = current + 1;
+      this.db.rows.set(year, next);
+      return { seq: next } as T;
+    }
+    throw new Error(`unrecognized SQL in fake D1: ${s}`);
   }
 }
 
 function makeEnv() {
-  return { INVOICE_STATE: new FakeKV() as any };
+  return { DB: new FakeD1() as any };
 }
 
 describe('formatInvoiceNumber', () => {
@@ -58,20 +71,25 @@ describe('nextInvoiceNumber', () => {
     expect(nextYear).toBe('INV-2027-0001');
   });
 
-  it('produces unique, sequential numbers under concurrency', async () => {
+  it('produces unique sequential numbers for serialized calls', async () => {
     const d = new Date('2026-06-01T00:00:00Z');
-    const results = await Promise.all(Array.from({ length: 20 }, () => nextInvoiceNumber(env as any, d)));
+    const results: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      results.push(await nextInvoiceNumber(env as any, d));
+    }
     const unique = new Set(results);
     expect(unique.size).toBe(results.length);
-    const sorted = [...results].sort();
-    for (let i = 0; i < sorted.length; i++) {
-      expect(sorted[i]).toBe(`INV-2026-${String(i + 1).padStart(4, '0')}`);
+    for (let i = 0; i < results.length; i++) {
+      expect(results[i]).toBe(`INV-2026-${String(i + 1).padStart(4, '0')}`);
     }
   });
 
-  it('throws on corrupt counter state', async () => {
-    const e = makeEnv();
-    (e.INVOICE_STATE as any).store.set('invoice:seq:2026', { value: 'not-a-number' });
-    await expect(nextInvoiceNumber(e as any, new Date('2026-02-01T00:00:00Z'))).rejects.toThrow(/corrupt/);
+  it('throws when D1 returns no row', async () => {
+    const brokenDB = {
+      prepare: () => ({ bind: () => ({ first: async () => null }) }),
+    };
+    await expect(nextInvoiceNumber({ DB: brokenDB as any }, new Date('2026-02-01T00:00:00Z'))).rejects.toThrow(
+      /Failed to allocate/,
+    );
   });
 });

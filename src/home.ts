@@ -40,20 +40,18 @@ export const home = async (c: any) => {
         secondaryColor: '#ffffff',
         logo: ''
       }
-      // Fetch company info for legal requirements
       try {
-        companyInfo = await getCompanyInfo(c)
-        const companyRawInfo = await getCompanyInfo(c)
-        console.log('companyRawInfo', companyRawInfo);
-        companyInfo.name = companyRawInfo.name ?? 'Not Set'
-        companyInfo.description = companyRawInfo.description ?? 'Not Set'
-        companyInfo.address = companyRawInfo.address ?? 'Not Set'
-        companyInfo.email = companyRawInfo.email ?? 'Not Set'
-        companyInfo.vatId = companyRawInfo.vatId ?? 'Not Set'
-        companyInfo.brandColor = companyRawInfo.brandColor ?? '#000000'
-        companyInfo.secondaryColor = companyRawInfo.secondaryColor ?? '#ffffff'
-        companyInfo.logo = companyRawInfo.logo ?? ''
-        console.log('companyInfo', companyInfo);
+        const fetched = await getCompanyInfo(c)
+        companyInfo = {
+          name: fetched.name ?? 'Not Set',
+          description: fetched.description ?? 'Not Set',
+          address: fetched.address ?? 'Not Set',
+          email: fetched.email ?? 'Not Set',
+          vatId: fetched.vatId ?? 'Not Set',
+          brandColor: fetched.brandColor ?? '#000000',
+          secondaryColor: fetched.secondaryColor ?? '#ffffff',
+          logo: fetched.logo ?? '',
+        }
       } catch (error) {
         console.error('Error fetching company info:', error);
       }

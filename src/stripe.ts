@@ -105,7 +105,7 @@ export async function getCustomerData(c: any, customerId: string): Promise<Custo
   if (!customer || customer.deleted) {
     throw new Error('Customer not found or deleted');
   }
-  const taxId = customer.tax_ids?.data[0].value;
+  const taxId = customer.tax_ids?.data[0]?.value;
   return {
     name: customer.name || 'Unknown',
     email: customer.email || 'Unknown',

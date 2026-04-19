@@ -43,8 +43,6 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
   console.log("companyAddress", companyAddress)
   console.log("companyEmail", companyEmail)
   console.log("companyVat", formattedVatNumber)
-  console.log("c.env.SENDGRID_FROM", c.env.SENDGRID_FROM)
-  console.log("c.env.DEV_MODE", c.env.DEV_MODE)
 
   const invoiceNumber = await nextInvoiceNumber(c.env)
 
@@ -247,7 +245,7 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
       return formatDateInWords(date).toUpperCase()
     }
 
-    billingPeriod = `${formatDate(startDate)} – ${formatDate(endDate)}`
+    billingPeriod = `${formatDate(startDate)} to ${formatDate(endDate)}`
   }
 
   // Construct email content with Stripe-like styling
@@ -522,7 +520,6 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
     subscriptionInfo,
   )
 
-  // Send email using nodemailer
   console.log("Sending email to", recipientEmail)
   await sendEmail(c, c.env.SENDGRID_FROM, recipientEmail, `Invoice from ${companyName}`, emailContent, [
     {

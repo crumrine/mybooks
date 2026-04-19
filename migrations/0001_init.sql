@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS invoice_counter (
+  year INTEGER PRIMARY KEY,
+  seq INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+);
