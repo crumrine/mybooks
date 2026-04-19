@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "build": "echo 'No build step required'",
+    "deploy": "npm run build:admin && wrangler deploy",
+    "build:admin": "cd admin && npm run build",
+    "build": "npm run build:admin",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

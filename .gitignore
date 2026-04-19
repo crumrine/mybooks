@@ -4,6 +4,7 @@ bun.lockb
 
 # Build output
 dist/
+admin/dist/
 
 # Environment variables
 .env

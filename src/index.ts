@@ -4,6 +4,8 @@ import { sendInvoice } from './invoices';
 import { home } from './home';
 import { billing, requestBillingLink } from './billing';
 import { handleStripeWebhook, webhookInit } from './webhook';
+import authRoutes from './authRoutes';
+import adminRoutes from './admin';
 
 export interface AppBindings {
   STRIPE_API_KEY: string;
@@ -15,8 +17,11 @@ export interface AppBindings {
   DEV_MODE: string;
   DEV_EMAIL: string;
   ADMIN_API_TOKEN: string;
+  ADMIN_EMAIL: string;
+  AUTH_SECRET: string;
   DB: D1Database;
   MYBROWSER: Fetcher;
+  ASSETS?: Fetcher;
 }
 
 const app = new Hono<{ Bindings: AppBindings }>();
@@ -61,10 +66,19 @@ app.post('/api/send-invoice', async (c) => {
   }
 });
 
+app.route('/', authRoutes as any);
+app.route('/', adminRoutes as any);
+
 app.get('/', home);
 app.get('/billing/:customerId', billing);
 app.get('/api/request-billing-link', requestBillingLink);
 app.post('/webhook/stripe', handleStripeWebhook);
+
+app.get('/admin', (c) => c.redirect('/admin/'));
+app.get('/admin/*', async (c) => {
+  if (c.env.ASSETS) return c.env.ASSETS.fetch(c.req.raw);
+  return c.text('Admin UI not deployed', 503 as any);
+});
 
 export default {
   scheduled: webhookInit,
