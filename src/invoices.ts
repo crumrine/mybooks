@@ -1,6 +1,7 @@
 import { sendEmail } from "./email"
 import { getCompanyInfo, getSubscriptionInfo, getCustomerData, getChargeData, getFormattedVatNumber } from "./stripe"
 import { createInvoicePDF } from "./pdf"
+import { nextInvoiceNumber } from "./invoiceNumber"
 
 // Helper function to send invoice
 export async function sendInvoice(c: any, customerId: string, chargeId: string) {
@@ -42,26 +43,15 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
   console.log("companyAddress", companyAddress)
   console.log("companyEmail", companyEmail)
   console.log("companyVat", formattedVatNumber)
-  console.log("c.env.EMAIL_FROM", c.env.EMAIL_FROM)
+  console.log("c.env.SENDGRID_FROM", c.env.SENDGRID_FROM)
   console.log("c.env.DEV_MODE", c.env.DEV_MODE)
 
-  // Generate or increment invoice number for this customer using date and customerId
-  const currentDate = new Date()
-  const datePart =
-    currentDate.getFullYear().toString().slice(-2) +
-    (currentDate.getMonth() + 1).toString().padStart(2, "0") +
-    currentDate.getDate().toString().padStart(2, "0")
-  // Create a simple hash of customerId to a number between 0 and 100000
-  let hash = 0
-  for (let i = 0; i < customerId.length; i++) {
-    hash = (hash * 31 + customerId.charCodeAt(i)) % 100000
-  }
-  const invoiceNumber = `${datePart}${hash.toString().padStart(5, "0")}`
+  const invoiceNumber = await nextInvoiceNumber(c.env)
 
   // Check for mandatory legal fields for invoice
   const isDevMode = c.env.DEV_MODE === "true"
   const mandatoryFieldsMissing = !companyName || !companyAddress || !companyEmail || !formattedVatNumber
-  const recipientEmail = isDevMode ? "martindonadieu@gmail.com" : email
+  const recipientEmail = isDevMode && c.env.DEV_EMAIL ? c.env.DEV_EMAIL : email
 
   if (mandatoryFieldsMissing && !companyEmail) {
     console.log("Mandatory legal fields for invoice are missing and no company email available to notify.")
@@ -75,8 +65,8 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
     if (!companyAddress) missingFields.push("Company Address")
     if (!companyEmail) missingFields.push("Company Email")
     if (!formattedVatNumber) missingFields.push("VAT ID")
-    const webhookUrlGet = `https://${c.env.CF_WORKER_DOMAIN}/api/send-invoice?customerId=${customerId}&chargeId=${chargeId}`
-    const webhookUrlPost = `https://${c.env.CF_WORKER_DOMAIN}/api/send-invoice`
+    const webhookUrlGet = `https://${c.env.APP_DOMAIN}/api/send-invoice?customerId=${customerId}&chargeId=${chargeId}`
+    const webhookUrlPost = `https://${c.env.APP_DOMAIN}/api/send-invoice`
     const notificationContent = `
       <html>
         <head>
@@ -212,7 +202,7 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
               <p>Update your Stripe account settings at <a href="https://dashboard.stripe.com/settings/account">https://dashboard.stripe.com/settings/account</a></p>
             </div>
             <div class="footer">
-              <p>Invoice Sender API</p>
+              <p>${companyName}</p>
             </div>
           </div>
         </body>
@@ -220,7 +210,7 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
     `
     await sendEmail(
       c,
-      c.env.EMAIL_FROM,
+      c.env.SENDGRID_FROM,
       companyEmail,
       `Invoice Generation Issue #${invoiceNumber}`,
       notificationContent,
@@ -261,7 +251,7 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
   }
 
   // Construct email content with Stripe-like styling
-  const billingUrl = `https://${c.env.CF_WORKER_DOMAIN}/billing/${customerId}`
+  const billingUrl = `https://${c.env.APP_DOMAIN}/billing/${customerId}`
   const stripeCustomerPortalUrl = `https://billing.stripe.com/p/login/customer/${customerId}`
 
   const emailContent = `
@@ -512,7 +502,7 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
               </div>
 
               <div style="margin-top: 20px; font-size: 14px;">
-                <a href="https://${c.env.CF_WORKER_DOMAIN}/billing/${customerId}" style="color: #635bff; text-decoration: none;">View all past invoices</a>
+                <a href="https://${c.env.APP_DOMAIN}/billing/${customerId}" style="color: #635bff; text-decoration: none;">View all past invoices</a>
               </div>
             </div>
           </div>
@@ -534,7 +524,7 @@ export async function sendInvoice(c: any, customerId: string, chargeId: string) 
 
   // Send email using nodemailer
   console.log("Sending email to", recipientEmail)
-  await sendEmail(c, c.env.EMAIL_FROM, recipientEmail, `Invoice from ${companyName}`, emailContent, [
+  await sendEmail(c, c.env.SENDGRID_FROM, recipientEmail, `Invoice from ${companyName}`, emailContent, [
     {
       filename: `invoice_${invoiceNumber}.pdf`,
       content: pdfBuffer.toString("base64"),

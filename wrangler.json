@@ -1,33 +1,38 @@
 {
-  "name": "worker-invoices",
+  "name": "mybooks",
   "main": "src/index.ts",
   "compatibility_date": "2025-04-01",
-  "route": {
-    "pattern": "invoices.capgo.app",
-    "custom_domain": true
-  },
-  "compatibility_flags": [
-    "nodejs_compat_v2"
-  ],
-  "workers_dev": false,
+  "compatibility_flags": ["nodejs_compat_v2"],
+  "workers_dev": true,
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
   },
   "upload_source_maps": true,
   "vars": {
-    "RESEND_API_KEY": "***",
-    "EMAIL_FROM": "Billing [YOUR COMPANY] <noreply@[YOUR COMPANY].app>",
-    "STRIPE_API_KEY": "***",
-    "CF_WORKER_DOMAIN": "invoices.[YOUR COMPANY].app",
+    "APP_NAME": "MyBooks",
+    "APP_DOMAIN": "billing.example.com",
+    "SENDGRID_FROM": "Billing <noreply@example.com>",
     "DEV_MODE": "true"
   },
   "browser": {
     "binding": "MYBROWSER"
   },
+  "kv_namespaces": [
+    {
+      "binding": "INVOICE_STATE",
+      "id": "replace-with-kv-id",
+      "preview_id": "replace-with-kv-preview-id"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mybooks",
+      "database_id": "replace-with-d1-id"
+    }
+  ],
   "triggers": {
-    "crons": [
-      "* * * * *"
-    ]
+    "crons": ["0 */6 * * *"]
   }
-} 
+}

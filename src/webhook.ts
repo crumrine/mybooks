@@ -1,31 +1,128 @@
+import type { Context } from 'hono';
+import Stripe from 'stripe';
 import { getWebhookEndpoints, deleteWebhookEndpoint, createWebhookEndpoint } from './stripe';
+import { parseDeliveryMode, shouldSendInvoiceEmail } from './deliveryMode';
+import { sendInvoice } from './invoices';
 
-export const webhookInit = async (event: ScheduledEvent, env: any, ctx: ExecutionContext) => {
+export interface WebhookEnv {
+  STRIPE_API_KEY: string;
+  STRIPE_WEBHOOK_SECRET: string;
+  APP_DOMAIN: string;
+}
+
+let cachedStripe: Stripe | null = null;
+function getStripe(apiKey: string): Stripe {
+  if (!cachedStripe) {
+    cachedStripe = new Stripe(apiKey, { apiVersion: '2025-08-27.basil', typescript: true });
+  }
+  return cachedStripe;
+}
+
+export interface VerifyResult {
+  ok: boolean;
+  status: number;
+  event?: Stripe.Event;
+  error?: string;
+}
+
+export async function verifyStripeWebhook(
+  rawBody: string,
+  signature: string | null,
+  secret: string,
+  apiKey: string,
+): Promise<VerifyResult> {
+  if (!signature) {
+    return { ok: false, status: 400, error: 'Missing Stripe-Signature header' };
+  }
+  if (!secret) {
+    return { ok: false, status: 500, error: 'Webhook secret not configured' };
+  }
+
+  const stripe = getStripe(apiKey);
   try {
-    console.log('Scheduled task running to check Stripe webhook setup');
-    
-    // Fetch existing webhooks from Stripe
+    const event = await stripe.webhooks.constructEventAsync(rawBody, signature, secret);
+    return { ok: true, status: 200, event };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Invalid signature';
+    return { ok: false, status: 401, error: message };
+  }
+}
+
+export async function handleStripeWebhook(c: Context<{ Bindings: any }>): Promise<Response> {
+  const signature = c.req.header('stripe-signature') ?? null;
+  const rawBody = await c.req.text();
+  const env = c.env as WebhookEnv;
+
+  const verification = await verifyStripeWebhook(rawBody, signature, env.STRIPE_WEBHOOK_SECRET, env.STRIPE_API_KEY);
+  if (!verification.ok) {
+    console.warn('Rejected webhook:', verification.error);
+    return c.json({ error: verification.error ?? 'Invalid request' }, verification.status as any);
+  }
+
+  const event = verification.event!;
+
+  if (event.type === 'charge.succeeded') {
+    const charge = event.data.object as Stripe.Charge;
+    const customerId = typeof charge.customer === 'string' ? charge.customer : charge.customer?.id;
+    const chargeId = charge.id;
+
+    if (!customerId) {
+      return c.json({ message: 'No customer on charge, skipping' }, 200 as any);
+    }
+
+    const customerMetadata = await loadCustomerMetadata(env.STRIPE_API_KEY, customerId);
+    const mode = parseDeliveryMode(customerMetadata);
+
+    if (!shouldSendInvoiceEmail(mode)) {
+      console.log(`Skipping invoice email for ${customerId} (delivery_mode=${mode})`);
+      return c.json({ message: 'Delivery mode suppressed' }, 200 as any);
+    }
+
+    c.executionCtx.waitUntil(sendInvoice(c, customerId, chargeId));
+    return c.json({ message: 'Invoice queued' }, 200 as any);
+  }
+
+  return c.json({ message: `Ignored event ${event.type}` }, 200 as any);
+}
+
+async function loadCustomerMetadata(apiKey: string, customerId: string): Promise<Record<string, string> | null> {
+  try {
+    const stripe = getStripe(apiKey);
+    const customer = await stripe.customers.retrieve(customerId);
+    if (!customer || (customer as Stripe.DeletedCustomer).deleted) return null;
+    return (customer as Stripe.Customer).metadata ?? null;
+  } catch (err) {
+    console.error('Failed to load customer metadata, defaulting to pdf_invoice:', err);
+    return null;
+  }
+}
+
+export const webhookInit = async (_event: ScheduledEvent, env: any, _ctx: ExecutionContext) => {
+  try {
+    if (!env.APP_DOMAIN) {
+      console.log('APP_DOMAIN not configured, skipping webhook auto-registration');
+      return;
+    }
     const webhookData = await getWebhookEndpoints({ env });
-    const webhookUrl = `https://${env.CF_WORKER_DOMAIN}/webhook/stripe`;
-    const requiredEvent = 'charge.succeeded';
-    const existingWebhook = webhookData.find((wh: any) => wh.url === webhookUrl && wh.enabled_events.includes(requiredEvent));
+    const webhookUrl = `https://${env.APP_DOMAIN}/webhook/stripe`;
+    const requiredEvents = ['charge.succeeded'];
+    const existingWebhook = webhookData.find(
+      (wh: any) => wh.url === webhookUrl && requiredEvents.every((e) => wh.enabled_events.includes(e)),
+    );
 
     if (!existingWebhook) {
-      console.log('Webhook not found or event not enabled, creating a new one');
-      // Delete existing webhook if it exists but doesn't have the required event
       const oldWebhook = webhookData.find((wh: any) => wh.url === webhookUrl);
       if (oldWebhook) {
-        console.log('Deleting existing webhook without required event:', oldWebhook.id);
         await deleteWebhookEndpoint({ env }, oldWebhook.id);
       }
-      
-      // Create a new webhook if not found or after deletion
-      const newWebhook = await createWebhookEndpoint({ env }, webhookUrl, [requiredEvent]);
-      console.log('Webhook created successfully:', newWebhook.id);
-    } else {
-      console.log('Webhook already exists:', existingWebhook.id);
+      const newWebhook = await createWebhookEndpoint({ env }, webhookUrl, requiredEvents);
+      console.log('Webhook created:', newWebhook.id);
     }
   } catch (error) {
     console.error('Error in scheduled webhook check:', error);
   }
+};
+
+export function __resetStripeClientForTest() {
+  cachedStripe = null;
 }

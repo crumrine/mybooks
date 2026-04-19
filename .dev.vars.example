@@ -1,0 +1,4 @@
+STRIPE_API_KEY=sk_test_xxx
+STRIPE_WEBHOOK_SECRET=whsec_xxx
+SENDGRID_API_KEY=SG.xxx
+DEV_EMAIL=you@example.com

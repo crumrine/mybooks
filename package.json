@@ -1,24 +1,25 @@
 {
-  "name": "invoice-sender",
-  "version": "1.0.0",
+  "name": "mybooks",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler publish",
+    "deploy": "wrangler deploy",
     "build": "echo 'No build step required'",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.0.2",
     "hono": "^4.7.7",
     "jspdf": "^3.0.1",
-    "resend": "^4.0.0",
     "stripe": "^18.1.0"
   },
   "devDependencies": {
-    "wrangler": "^4.14.1",
-    "typescript": "^5.8.3",
+    "@cloudflare/workers-types": "^4.20250428.0",
     "@types/bun": "latest",
-    "@cloudflare/workers-types": "^4.20250428.0"
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.9",
+    "wrangler": "^4.14.1"
   }
 }

@@ -313,7 +313,6 @@ export function renderHtml(title: string, content: string, cfWorkerDomain: strin
         <div class="container">
           ${content}
           <footer class="footer">
-            <p>Powered by Invoice Sender API</p>
           </footer>
         </div>
         ${getCopyExampleScript(cfWorkerDomain)}

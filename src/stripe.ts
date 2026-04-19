@@ -10,7 +10,7 @@ let stripe: Stripe | null = null;
 function initStripe(apiKey: string) {
   if (!stripe) {
     stripe = new Stripe(apiKey, {
-      apiVersion: '2025-04-30.basil',
+      apiVersion: '2025-08-27.basil',
       typescript: true,
     });
   }
@@ -127,10 +127,10 @@ export async function getCompanyInfo(c: any): Promise<CompanyInfo> {
     address: 'Not Set', 
     email: 'Not Set', 
     vatId: '', 
-    brandColor: '#4f46e5', 
-    logo: '', 
+    brandColor: '#4f46e5',
+    logo: '',
     secondaryColor: '#f3f4f6',
-    description: 'Automatic updates for Capacitor apps'
+    description: ''
   };
 
   companyInfo.name = account.business_profile?.name || 'Not Set';
@@ -139,7 +139,7 @@ export async function getCompanyInfo(c: any): Promise<CompanyInfo> {
   companyInfo.email = account.business_profile?.support_email || 'Not Set';
   companyInfo.brandColor = account.settings?.branding?.primary_color || '#4f46e5';
   companyInfo.secondaryColor = account.settings?.branding?.secondary_color || '#f3f4f6';
-  companyInfo.description = account.business_profile?.product_description || 'Automatic updates for Capacitor apps';
+  companyInfo.description = account.business_profile?.product_description || '';
   
   // Get and format VAT number
   if (account.settings?.invoices?.default_account_tax_ids && account.settings.invoices.default_account_tax_ids.length > 0) {
