@@ -152,9 +152,21 @@ admin.get('/api/admin/clients/:id', async (c) => {
       .first<{ display_name: string; hourly_rate_cents: number | null; notes: string | null; archived_at: number | null }>();
 
     const [subs, invoices] = await Promise.all([
-      stripe.subscriptions.list({ customer: id, status: 'all', limit: 20, expand: ['data.items.data.price.product'] }),
+      stripe.subscriptions.list({ customer: id, status: 'all', limit: 20, expand: ['data.default_payment_method'] }),
       stripe.invoices.list({ customer: id, limit: 20 }),
     ]);
+
+    const productIds = new Set<string>();
+    for (const s of subs.data) {
+      for (const i of s.items.data) {
+        if (typeof i.price.product === 'string') productIds.add(i.price.product);
+      }
+    }
+    const productMap = new Map<string, Stripe.Product>();
+    if (productIds.size > 0) {
+      const products = await stripe.products.list({ ids: [...productIds], limit: 100 });
+      for (const p of products.data) productMap.set(p.id, p);
+    }
 
     return c.json({
     id: cust.id,
@@ -168,13 +180,17 @@ admin.get('/api/admin/clients/:id', async (c) => {
     subscriptions: subs.data.map((s) => ({
       id: s.id,
       status: s.status,
-      current_period_end: s.items.data[0]?.current_period_end,
-      items: s.items.data.map((i) => ({
-        plan_name: typeof i.price.product === 'object' && i.price.product && 'name' in i.price.product ? i.price.product.name : null,
-        amount: i.price.unit_amount,
-        currency: i.price.currency,
-        interval: i.price.recurring?.interval,
-      })),
+      current_period_end: s.items.data[0]?.current_period_end ?? null,
+      items: s.items.data.map((i) => {
+        const prodId = typeof i.price.product === 'string' ? i.price.product : null;
+        const prod = prodId ? productMap.get(prodId) ?? null : null;
+        return {
+          plan_name: prod?.name ?? null,
+          amount: i.price.unit_amount,
+          currency: i.price.currency,
+          interval: i.price.recurring?.interval,
+        };
+      }),
     })),
     invoices: invoices.data.map((inv) => ({
       id: inv.id,
