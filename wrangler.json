@@ -24,8 +24,7 @@
   "assets": {
     "directory": "admin/dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application",
-    "html_handling": "auto-trailing-slash",
+    "html_handling": "none",
     "run_worker_first": ["/api/*", "/webhook/*"]
   },
   "d1_databases": [

@@ -6,6 +6,7 @@ import { billing, requestBillingLink } from './billing';
 import { handleStripeWebhook, webhookInit } from './webhook';
 import authRoutes from './authRoutes';
 import adminRoutes from './admin';
+import timeRoutes from './timeEntries';
 import { createAxiomLogger, describeError, type AxiomEnv } from './axiom';
 
 export interface AppBindings extends AxiomEnv {
@@ -119,6 +120,7 @@ app.post('/api/send-invoice', async (c) => {
 
 app.route('/', authRoutes as any);
 app.route('/', adminRoutes as any);
+app.route('/', timeRoutes as any);
 
 app.get('/', home);
 app.get('/billing/:customerId', billing);
@@ -127,8 +129,9 @@ app.post('/webhook/stripe', handleStripeWebhook);
 
 app.get('/admin', (c) => c.redirect('/admin/'));
 app.get('/admin/*', async (c) => {
-  if (c.env.ASSETS) return c.env.ASSETS.fetch(c.req.raw);
-  return c.text('Admin UI not deployed', 503 as any);
+  if (!c.env.ASSETS) return c.text('Admin UI not deployed', 503 as any);
+  const indexUrl = new URL('/admin/index.html', c.req.url);
+  return c.env.ASSETS.fetch(new Request(indexUrl.toString(), c.req.raw));
 });
 
 export default {

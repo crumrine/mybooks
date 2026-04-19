@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Clients from './pages/Clients';
 import ClientDetail from './pages/ClientDetail';
 import NewSubscription from './pages/NewSubscription';
+import TimeCapture from './pages/TimeCapture';
 
 export default function App() {
   const [session, setSession] = useState<{ authenticated: boolean; email?: string } | null>(null);
@@ -33,6 +34,7 @@ export default function App() {
           <nav className="flex gap-4 text-sm text-neutral-400">
             <Link to="/" className="hover:text-neutral-100">Dashboard</Link>
             <Link to="/clients" className="hover:text-neutral-100">Clients</Link>
+            <Link to="/time" className="hover:text-neutral-100">Time</Link>
           </nav>
           <div className="ml-auto flex items-center gap-3 text-xs text-neutral-500">
             <span>{session.email}</span>
@@ -54,6 +56,7 @@ export default function App() {
           <Route path="/clients" element={<Clients />} />
           <Route path="/clients/:id" element={<ClientDetail />} />
           <Route path="/clients/:id/new-subscription" element={<NewSubscription />} />
+          <Route path="/time" element={<TimeCapture />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </main>
