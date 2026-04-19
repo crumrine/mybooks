@@ -73,6 +73,7 @@ export async function handleStripeWebhook(c: Context<{ Bindings: any }>): Promis
     const chargeId = charge.id;
 
     if (!customerId) {
+      console.warn('charge.succeeded has no customer, skipping:', chargeId);
       return c.json({ message: 'No customer on charge, skipping' }, 200 as any);
     }
 
@@ -84,7 +85,11 @@ export async function handleStripeWebhook(c: Context<{ Bindings: any }>): Promis
       return c.json({ message: 'Delivery mode suppressed' }, 200 as any);
     }
 
-    c.executionCtx.waitUntil(sendInvoice(c, customerId, chargeId));
+    c.executionCtx.waitUntil(
+      sendInvoice(c, customerId, chargeId).catch((err) => {
+        console.error('sendInvoice failed for customer', customerId, 'charge', chargeId, '-', err instanceof Error ? (err.stack ?? err.message) : String(err));
+      }),
+    );
     return c.json({ message: 'Invoice queued' }, 200 as any);
   }
 

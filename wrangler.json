@@ -10,9 +10,9 @@
   },
   "upload_source_maps": true,
   "vars": {
-    "APP_NAME": "MyBooks",
-    "APP_DOMAIN": "billing.example.com",
-    "SENDGRID_FROM": "Billing <noreply@example.com>"
+    "APP_NAME": "EMPRO MyBooks",
+    "APP_DOMAIN": "billing.empro.biz",
+    "SENDGRID_FROM": "Billing <brian@empro.biz>"
   },
   "browser": {
     "binding": "MYBROWSER"
