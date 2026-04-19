@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import type { AppBindings } from './index';
 import { requireSession, AuthEnv, SessionClaims } from './auth';
 import { parseDeliveryMode, type DeliveryMode } from './deliveryMode';
+import { createAxiomLogger, describeError } from './axiom';
 
 const VALID_DELIVERY_MODES: readonly DeliveryMode[] = ['auto_charge_silent', 'pdf_invoice'];
 const VALID_INTERVALS = ['day', 'week', 'month', 'year'] as const;
@@ -134,22 +135,28 @@ admin.post('/api/admin/clients', async (c) => {
 
 admin.get('/api/admin/clients/:id', async (c) => {
   const id = c.req.param('id');
-  const stripe = stripeClient(c.env.STRIPE_API_KEY);
-  const customer = await stripe.customers.retrieve(id);
-  if ((customer as any).deleted) return c.json({ error: 'Customer deleted' }, 404 as any);
-  const cust = customer as Stripe.Customer;
+  const log = createAxiomLogger(c.env, {
+    component: 'admin.client_detail',
+    fields: { customer_id: id },
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+  });
+  try {
+    const stripe = stripeClient(c.env.STRIPE_API_KEY);
+    const customer = await stripe.customers.retrieve(id);
+    if ((customer as any).deleted) return c.json({ error: 'Customer deleted' }, 404 as any);
+    const cust = customer as Stripe.Customer;
 
-  const local = await c.env.DB
-    .prepare('SELECT display_name, hourly_rate_cents, notes, archived_at FROM client_metadata WHERE stripe_customer_id = ?1')
-    .bind(id)
-    .first<{ display_name: string; hourly_rate_cents: number | null; notes: string | null; archived_at: number | null }>();
+    const local = await c.env.DB
+      .prepare('SELECT display_name, hourly_rate_cents, notes, archived_at FROM client_metadata WHERE stripe_customer_id = ?1')
+      .bind(id)
+      .first<{ display_name: string; hourly_rate_cents: number | null; notes: string | null; archived_at: number | null }>();
 
-  const [subs, invoices] = await Promise.all([
-    stripe.subscriptions.list({ customer: id, status: 'all', limit: 20, expand: ['data.items.data.price.product'] }),
-    stripe.invoices.list({ customer: id, limit: 20 }),
-  ]);
+    const [subs, invoices] = await Promise.all([
+      stripe.subscriptions.list({ customer: id, status: 'all', limit: 20, expand: ['data.items.data.price.product'] }),
+      stripe.invoices.list({ customer: id, limit: 20 }),
+    ]);
 
-  return c.json({
+    return c.json({
     id: cust.id,
     email: cust.email,
     stripe_name: cust.name,
@@ -179,7 +186,11 @@ admin.get('/api/admin/clients/:id', async (c) => {
       hosted_invoice_url: inv.hosted_invoice_url,
       created: inv.created,
     })),
-  });
+    });
+  } catch (err) {
+    log.error('client_detail_failed', describeError(err));
+    throw err;
+  }
 });
 
 admin.patch('/api/admin/clients/:id', async (c) => {

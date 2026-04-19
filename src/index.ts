@@ -6,8 +6,9 @@ import { billing, requestBillingLink } from './billing';
 import { handleStripeWebhook, webhookInit } from './webhook';
 import authRoutes from './authRoutes';
 import adminRoutes from './admin';
+import { createAxiomLogger, describeError, type AxiomEnv } from './axiom';
 
-export interface AppBindings {
+export interface AppBindings extends AxiomEnv {
   STRIPE_API_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
   SENDGRID_API_KEY: string;
@@ -27,6 +28,50 @@ export interface AppBindings {
 const app = new Hono<{ Bindings: AppBindings }>();
 
 app.use('*', logger());
+
+app.onError((err, c) => {
+  const log = createAxiomLogger(c.env, {
+    component: 'worker.onError',
+    fields: {
+      path: new URL(c.req.url).pathname,
+      method: c.req.method,
+    },
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+  });
+  log.error('unhandled_error', describeError(err));
+  console.error('[onError]', err);
+  return c.json({ error: 'Internal server error' }, 500 as any);
+});
+
+app.post('/api/log/client', async (c) => {
+  try {
+    const body = await c.req.json<{
+      message?: string;
+      stack?: string;
+      url?: string;
+      user_agent?: string;
+      component?: string;
+      level?: 'info' | 'warn' | 'error';
+      context?: Record<string, unknown>;
+    }>();
+    const log = createAxiomLogger(c.env, {
+      component: body.component ?? 'admin_ui',
+      fields: {
+        source: 'browser',
+        url: body.url,
+        user_agent: body.user_agent,
+      },
+      waitUntil: (p) => c.executionCtx.waitUntil(p),
+    });
+    log[body.level ?? 'error'](body.message ?? 'client_error', {
+      error_stack: body.stack,
+      ...(body.context ?? {}),
+    });
+    return c.json({ ok: true });
+  } catch {
+    return c.json({ ok: false }, 400 as any);
+  }
+});
 
 async function requireAdminToken(c: any): Promise<Response | null> {
   const expected = c.env.ADMIN_API_TOKEN;

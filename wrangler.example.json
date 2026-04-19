@@ -13,7 +13,11 @@
   "vars": {
     "APP_NAME": "YourCo Billing",
     "APP_DOMAIN": "billing.example.com",
-    "SENDGRID_FROM": "Billing <noreply@example.com>"
+    "SENDGRID_FROM": "Billing <noreply@example.com>",
+    "AXIOM_DATASET": "your-axiom-dataset",
+    "AXIOM_REGION": "us",
+    "AXIOM_APP_ID": "mybooks",
+    "AXIOM_ENV": "prod"
   },
   "browser": {
     "binding": "MYBROWSER"

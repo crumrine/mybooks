@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/pages/ClientDetail.tsx","./src/pages/Clients.tsx","./src/pages/Dashboard.tsx","./src/pages/Login.tsx","./src/pages/NewSubscription.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/ErrorBoundary.tsx","./src/api.ts","./src/errorReporting.ts","./src/main.tsx","./src/pages/ClientDetail.tsx","./src/pages/Clients.tsx","./src/pages/Dashboard.tsx","./src/pages/Login.tsx","./src/pages/NewSubscription.tsx"],"version":"5.9.3"}

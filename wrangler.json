@@ -12,7 +12,11 @@
   "vars": {
     "APP_NAME": "EMPRO MyBooks",
     "APP_DOMAIN": "billing.empro.biz",
-    "SENDGRID_FROM": "Billing <brian@empro.biz>"
+    "SENDGRID_FROM": "Billing <brian@empro.biz>",
+    "AXIOM_DATASET": "sparkletext",
+    "AXIOM_REGION": "us",
+    "AXIOM_APP_ID": "mybooks",
+    "AXIOM_ENV": "prod"
   },
   "browser": {
     "binding": "MYBROWSER"

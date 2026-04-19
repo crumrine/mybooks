@@ -11,8 +11,9 @@ import {
   verifySession,
 } from './auth';
 import { getEmailProvider } from './email';
+import { createAxiomLogger, describeError, type AxiomEnv } from './axiom';
 
-const auth = new Hono<{ Bindings: AuthEnv }>();
+const auth = new Hono<{ Bindings: AuthEnv & AxiomEnv }>();
 
 auth.post('/api/auth/request', async (c) => {
   const env = c.env;
@@ -37,6 +38,11 @@ auth.post('/api/auth/request', async (c) => {
     return c.json({ error: 'Too many requests' }, 429 as any);
   }
 
+  const log = createAxiomLogger(env as any, {
+    component: 'auth.request',
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+  });
+
   if (requested === adminEmail) {
     const challenge = await issueChallenge(env.DB, adminEmail);
     const origin = new URL(c.req.url).origin;
@@ -44,11 +50,14 @@ auth.post('/api/auth/request', async (c) => {
     const { subject, html } = magicLinkEmail(env.APP_NAME || 'Billing', env.APP_DOMAIN, callbackUrl);
     try {
       await getEmailProvider(env).send({ to: adminEmail, subject, html });
+      log.info('magic_link_sent', { origin });
     } catch (err) {
       console.error('Failed to send magic-link email:', err);
+      log.error('magic_link_send_failed', { ...describeError(err), origin });
       return c.json({ error: 'Unable to send magic link' }, 502 as any);
     }
   } else {
+    log.info('magic_link_request_ignored_non_admin', { requested_hash: await hashEmailForLog(requested) });
     await sleepForTimingParity();
   }
 
@@ -78,6 +87,14 @@ async function allowAuthRequest(db: D1Database, ip: string, email: string): Prom
 async function sleepForTimingParity(): Promise<void> {
   const ms = 200 + Math.floor(Math.random() * 150);
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function hashEmailForLog(email: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(email));
+  const bytes = new Uint8Array(digest);
+  let out = '';
+  for (let i = 0; i < 6; i++) out += bytes[i].toString(16).padStart(2, '0');
+  return out;
 }
 
 auth.get('/api/auth/callback', async (c) => {

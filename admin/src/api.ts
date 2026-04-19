@@ -1,3 +1,5 @@
+import { reportClientError } from './errorReporting';
+
 export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -20,7 +22,13 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
       const j = JSON.parse(text);
       msg = j.error ?? j.message ?? text;
     } catch {}
-    throw new Error(msg || `HTTP ${res.status}`);
+    const errMsg = msg || `HTTP ${res.status}`;
+    reportClientError({
+      message: `api_error ${init?.method ?? 'GET'} ${path}`,
+      component: 'admin.api',
+      context: { status: res.status, body: errMsg.slice(0, 500), method: init?.method ?? 'GET', path },
+    });
+    throw new Error(errMsg);
   }
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
