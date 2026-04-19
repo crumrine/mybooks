@@ -5,6 +5,20 @@ vi.mock('../src/auth', () => ({
   requireSession: () => async (_c: any, next: any) => next(),
 }));
 
+const stripeMocks = {
+  createItem: vi.fn(),
+  deleteItem: vi.fn(),
+};
+vi.mock('stripe', () => {
+  const Mock = vi.fn().mockImplementation(() => ({
+    invoiceItems: {
+      create: (...args: any[]) => stripeMocks.createItem(...args),
+      del: (...args: any[]) => stripeMocks.deleteItem(...args),
+    },
+  }));
+  return { default: Mock };
+});
+
 import timeRoutes from '../src/timeEntries';
 
 interface Row {
@@ -26,6 +40,7 @@ interface Row {
 
 class FakeD1 {
   store = new Map<string, Row>();
+  clientMeta = new Map<string, { hourly_rate_cents: number | null }>();
 
   prepare(sql: string) {
     return new FakeStmt(this, sql);
@@ -42,6 +57,10 @@ class FakeStmt {
   }
   async first<T>(): Promise<T | null> {
     const s = this.norm();
+    if (s.startsWith('SELECT hourly_rate_cents FROM client_metadata')) {
+      const [cid] = this.args;
+      return (this.db.clientMeta.get(cid) as T) ?? null;
+    }
     if (s.startsWith('SELECT * FROM time_entries WHERE id =')) {
       const [id] = this.args;
       return (this.db.store.get(id) as T) ?? null;
@@ -91,6 +110,12 @@ class FakeStmt {
   }
   async all<T>(): Promise<{ results: T[] }> {
     const s = this.norm();
+    if (s.startsWith('SELECT * FROM time_entries WHERE id IN')) {
+      const rows = this.args
+        .map((id) => this.db.store.get(id))
+        .filter((r): r is Row => r !== undefined);
+      return { results: rows as unknown as T[] };
+    }
     if (s.startsWith('SELECT * FROM time_entries') && s.includes('ORDER BY')) {
       let rows = [...this.db.store.values()];
       let argIdx = 0;
@@ -109,6 +134,33 @@ class FakeStmt {
     return { results: [] };
   }
   async run() {
+    const s = this.norm();
+    if (s.startsWith("UPDATE time_entries SET status = 'pushed'")) {
+      const [id, itemId, now] = this.args;
+      const row = this.db.store.get(id);
+      if (!row || row.status !== 'draft') return { meta: { changes: 0 } };
+      row.status = 'pushed';
+      row.stripe_invoice_item_id = itemId;
+      row.pushed_at = now;
+      row.updated_at = now;
+      return { meta: { changes: 1 } };
+    }
+    if (s.startsWith("UPDATE time_entries SET status = 'draft'")) {
+      let changes = 0;
+      const ids = this.args.slice(0, this.args.length - 1) as string[];
+      const now = this.args[this.args.length - 1] as number;
+      for (const id of ids) {
+        const row = this.db.store.get(id);
+        if (row && row.status === 'pushed') {
+          row.status = 'draft';
+          row.stripe_invoice_item_id = null;
+          row.pushed_at = null;
+          row.updated_at = now;
+          changes++;
+        }
+      }
+      return { meta: { changes } };
+    }
     return { meta: { changes: 0 } };
   }
 }
@@ -123,6 +175,7 @@ function makeApp(db: FakeD1) {
         DB: db as any,
         AXIOM_TOKEN: '',
         AXIOM_DATASET: '',
+        STRIPE_API_KEY: 'sk_test_dummy',
       };
       return app.fetch(req, env as any, { waitUntil: () => {} } as any);
     },
@@ -245,6 +298,120 @@ describe('PATCH /api/time/:id', () => {
     db.store.get(id)!.status = 'pushed';
     const res = await app.fetch(`/api/time/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ minutes: 99 }) });
     expect(res.status).toBe(409);
+  });
+});
+
+describe('POST /api/time/push', () => {
+  let db: FakeD1;
+  let app: ReturnType<typeof makeApp>;
+  let itemCounter: number;
+
+  beforeEach(() => {
+    db = new FakeD1();
+    app = makeApp(db);
+    itemCounter = 0;
+    stripeMocks.createItem.mockReset();
+    stripeMocks.deleteItem.mockReset();
+    stripeMocks.createItem.mockImplementation(async ({ customer, amount }: any) => {
+      itemCounter++;
+      return { id: `ii_test_${itemCounter}`, customer, amount };
+    });
+  });
+
+  async function seedEntry(overrides: Partial<Row> = {}): Promise<Row> {
+    const res = await (await app.fetch('/api/time', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ customer_id: 'cus_a', minutes: 60, entry_date: '2026-04-19', description: 'work', ...overrides }),
+    })).json() as any;
+    const row = db.store.get(res.entries[0].id)!;
+    Object.assign(row, overrides);
+    return row;
+  }
+
+  it('pushes entries using client hourly rate', async () => {
+    db.clientMeta.set('cus_a', { hourly_rate_cents: 15000 });
+    const a = await seedEntry();
+    const b = await seedEntry({});
+    const res = await app.fetch('/api/time/push', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry_ids: [a.id, b.id] }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.pushed).toHaveLength(2);
+    expect(body.pushed[0].amount_cents).toBe(15000);
+    expect(stripeMocks.createItem).toHaveBeenCalledTimes(2);
+    expect(db.store.get(a.id)!.status).toBe('pushed');
+    expect(db.store.get(a.id)!.stripe_invoice_item_id).toBe('ii_test_1');
+  });
+
+  it('accepts rate_cents override', async () => {
+    const a = await seedEntry({ minutes: 30 });
+    const res = await (await app.fetch('/api/time/push', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry_ids: [a.id], rate_cents: 20000 }),
+    })).json() as any;
+    expect(res.pushed[0].amount_cents).toBe(10000);
+  });
+
+  it('rejects if rate missing and no override', async () => {
+    const a = await seedEntry();
+    const res = await app.fetch('/api/time/push', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry_ids: [a.id] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects when entries span multiple customers', async () => {
+    db.clientMeta.set('cus_a', { hourly_rate_cents: 10000 });
+    const a = await seedEntry();
+    const b = await seedEntry({ customer_id: 'cus_b' });
+    db.store.get(b.id)!.customer_id = 'cus_b';
+    const res = await app.fetch('/api/time/push', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry_ids: [a.id, b.id] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rolls back partial failure', async () => {
+    db.clientMeta.set('cus_a', { hourly_rate_cents: 10000 });
+    const a = await seedEntry();
+    const b = await seedEntry();
+    stripeMocks.createItem.mockImplementationOnce(async () => ({ id: 'ii_ok_1', customer: 'cus_a', amount: 10000 }));
+    stripeMocks.createItem.mockImplementationOnce(async () => { throw new Error('stripe boom'); });
+    const res = await app.fetch('/api/time/push', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry_ids: [a.id, b.id] }),
+    });
+    expect(res.status).toBe(500);
+    expect(stripeMocks.deleteItem).toHaveBeenCalledWith('ii_ok_1');
+    expect(db.store.get(a.id)!.status).toBe('draft');
+    expect(db.store.get(a.id)!.stripe_invoice_item_id).toBeNull();
+    expect(db.store.get(b.id)!.status).toBe('draft');
+  });
+
+  it('refuses non-draft entries', async () => {
+    db.clientMeta.set('cus_a', { hourly_rate_cents: 10000 });
+    const a = await seedEntry();
+    db.store.get(a.id)!.status = 'pushed';
+    const res = await app.fetch('/api/time/push', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry_ids: [a.id] }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('refuses non-billable entries', async () => {
+    db.clientMeta.set('cus_a', { hourly_rate_cents: 10000 });
+    const a = await seedEntry();
+    db.store.get(a.id)!.billable = 0;
+    const res = await app.fetch('/api/time/push', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry_ids: [a.id] }),
+    });
+    expect(res.status).toBe(400);
   });
 });
 

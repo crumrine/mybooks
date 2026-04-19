@@ -322,6 +322,93 @@ admin.post('/api/admin/subscriptions', async (c) => {
   }
 });
 
+admin.post('/api/admin/clients/:id/invoice', async (c) => {
+  const customerId = c.req.param('id');
+  const log = createAxiomLogger(c.env, {
+    component: 'admin.one_off_invoice',
+    fields: { customer_id: customerId },
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+  });
+
+  let body: {
+    amount_cents: number;
+    description: string;
+    currency?: string;
+    send_email?: boolean;
+    auto_advance?: boolean;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON' }, 400 as any);
+  }
+
+  if (typeof body.amount_cents !== 'number' || !Number.isInteger(body.amount_cents) || body.amount_cents < STRIPE_MIN_CENTS) {
+    return c.json({ error: `amount_cents must be an integer >= ${STRIPE_MIN_CENTS}` }, 400 as any);
+  }
+  if (typeof body.description !== 'string' || body.description.trim().length === 0) {
+    return c.json({ error: 'description required' }, 400 as any);
+  }
+  const currency = (body.currency ?? 'usd').toLowerCase();
+  if (!/^[a-z]{3}$/.test(currency)) {
+    return c.json({ error: 'invalid currency' }, 400 as any);
+  }
+
+  const stripe = stripeClient(c.env.STRIPE_API_KEY);
+  let itemId: string | null = null;
+  try {
+    const item = await stripe.invoiceItems.create({
+      customer: customerId,
+      amount: body.amount_cents,
+      currency,
+      description: body.description.trim(),
+    });
+    itemId = item.id;
+
+    const invoice = await stripe.invoices.create({
+      customer: customerId,
+      auto_advance: body.auto_advance ?? true,
+      collection_method: 'send_invoice',
+      days_until_due: 14,
+      pending_invoice_items_behavior: 'include',
+    });
+
+    const finalized = await stripe.invoices.finalizeInvoice(invoice.id!);
+
+    if (body.send_email !== false) {
+      try {
+        await stripe.invoices.sendInvoice(finalized.id!);
+      } catch (sendErr) {
+        log.warn('stripe_send_invoice_failed', describeError(sendErr));
+      }
+    }
+
+    log.info('one_off_invoice_created', {
+      invoice_id: finalized.id,
+      amount_due: finalized.amount_due,
+      status: finalized.status,
+    });
+
+    return c.json(
+      {
+        invoice_id: finalized.id,
+        number: finalized.number,
+        status: finalized.status,
+        amount_due: finalized.amount_due,
+        hosted_invoice_url: finalized.hosted_invoice_url,
+        invoice_pdf: finalized.invoice_pdf,
+      },
+      201 as any,
+    );
+  } catch (err) {
+    log.error('one_off_invoice_failed', describeError(err));
+    if (itemId) {
+      try { await stripe.invoiceItems.del(itemId); } catch {}
+    }
+    throw err;
+  }
+});
+
 admin.get('/api/admin/invoices', async (c) => {
   const stripe = stripeClient(c.env.STRIPE_API_KEY);
   const invoices = await stripe.invoices.list({ limit: 50 });

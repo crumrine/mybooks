@@ -1,7 +1,14 @@
 import { Hono } from 'hono';
+import Stripe from 'stripe';
 import type { AppBindings } from './index';
 import { requireSession, type AuthEnv, type SessionClaims } from './auth';
 import { createAxiomLogger, describeError, type AxiomEnv } from './axiom';
+
+let cachedStripe: Stripe | null = null;
+function stripeClient(apiKey: string): Stripe {
+  if (!cachedStripe) cachedStripe = new Stripe(apiKey, { apiVersion: '2025-08-27.basil', typescript: true });
+  return cachedStripe;
+}
 
 export type TimeEntryStatus = 'draft' | 'pushed' | 'billed' | 'voided';
 const VALID_STATUSES: readonly TimeEntryStatus[] = ['draft', 'pushed', 'billed', 'voided'];
@@ -248,6 +255,118 @@ time.patch('/api/time/:id', async (c) => {
     .first<TimeEntryRow>();
   if (!updated) return c.json({ error: 'update failed' }, 500 as any);
   return c.json(rowToEntry(updated));
+});
+
+time.post('/api/time/push', async (c) => {
+  const log = createAxiomLogger(c.env, {
+    component: 'time.push',
+    waitUntil: (p) => c.executionCtx.waitUntil(p),
+  });
+
+  let body: { entry_ids?: string[]; rate_cents?: number };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid JSON' }, 400 as any);
+  }
+  if (!Array.isArray(body.entry_ids) || body.entry_ids.length === 0) {
+    return c.json({ error: 'entry_ids required' }, 400 as any);
+  }
+  if (body.entry_ids.length > 100) {
+    return c.json({ error: 'max 100 entries per push' }, 400 as any);
+  }
+  if (body.rate_cents != null && (!Number.isInteger(body.rate_cents) || body.rate_cents <= 0)) {
+    return c.json({ error: 'rate_cents must be a positive integer' }, 400 as any);
+  }
+
+  const placeholders = body.entry_ids.map((_, i) => `?${i + 1}`).join(',');
+  const rows = await c.env.DB
+    .prepare(`SELECT * FROM time_entries WHERE id IN (${placeholders})`)
+    .bind(...body.entry_ids)
+    .all<TimeEntryRow>();
+  const entries = rows.results ?? [];
+
+  if (entries.length !== body.entry_ids.length) {
+    return c.json({ error: 'some entry_ids not found' }, 404 as any);
+  }
+  const nonDraft = entries.filter((e) => e.status !== 'draft');
+  if (nonDraft.length > 0) {
+    return c.json({ error: `not all entries in draft (${nonDraft.map((e) => e.id).join(',')})` }, 409 as any);
+  }
+  const nonBillable = entries.filter((e) => e.billable !== 1);
+  if (nonBillable.length > 0) {
+    return c.json({ error: `non-billable entries cannot be pushed` }, 400 as any);
+  }
+  const customerId = entries[0].customer_id;
+  if (!entries.every((e) => e.customer_id === customerId)) {
+    return c.json({ error: 'all entries must belong to the same customer' }, 400 as any);
+  }
+
+  let rateCents = body.rate_cents;
+  if (rateCents == null) {
+    const meta = await c.env.DB
+      .prepare('SELECT hourly_rate_cents FROM client_metadata WHERE stripe_customer_id = ?1')
+      .bind(customerId)
+      .first<{ hourly_rate_cents: number | null }>();
+    rateCents = meta?.hourly_rate_cents ?? undefined;
+  }
+  if (!rateCents) {
+    return c.json({ error: 'no hourly_rate_cents set for client and none provided' }, 400 as any);
+  }
+
+  const stripe = stripeClient(c.env.STRIPE_API_KEY);
+  const pushed: { entry_id: string; stripe_invoice_item_id: string; amount_cents: number }[] = [];
+  const now = Date.now();
+  const createdItemIds: string[] = [];
+
+  try {
+    for (const entry of entries) {
+      const amount = Math.round((entry.minutes / 60) * rateCents);
+      const descParts = [
+        entry.description || `${entry.minutes} min`,
+        `(${entry.entry_date})`,
+      ];
+      const item = await stripe.invoiceItems.create({
+        customer: customerId,
+        amount,
+        currency: 'usd',
+        description: descParts.join(' '),
+        metadata: { time_entry_id: entry.id },
+      });
+      createdItemIds.push(item.id);
+
+      await c.env.DB
+        .prepare(
+          `UPDATE time_entries
+           SET status = 'pushed', stripe_invoice_item_id = ?2, pushed_at = ?3, updated_at = ?3
+           WHERE id = ?1 AND status = 'draft'`,
+        )
+        .bind(entry.id, item.id, now)
+        .run();
+
+      pushed.push({ entry_id: entry.id, stripe_invoice_item_id: item.id, amount_cents: amount });
+    }
+    log.info('time_entries_pushed', { customer_id: customerId, count: pushed.length, total_cents: pushed.reduce((s, p) => s + p.amount_cents, 0) });
+    return c.json({ customer_id: customerId, pushed });
+  } catch (err) {
+    log.error('time_push_failed', { ...describeError(err), customer_id: customerId, entry_count: entries.length, created_item_ids: createdItemIds });
+    for (const id of createdItemIds) {
+      try { await stripe.invoiceItems.del(id); } catch {}
+    }
+    if (createdItemIds.length > 0) {
+      const idArgs = entries.map((_, i) => `?${i + 1}`).join(',');
+      const tsPlaceholder = `?${entries.length + 1}`;
+      await c.env.DB
+        .prepare(
+          `UPDATE time_entries
+           SET status = 'draft', stripe_invoice_item_id = NULL, pushed_at = NULL, updated_at = ${tsPlaceholder}
+           WHERE id IN (${idArgs}) AND status = 'pushed'`,
+        )
+        .bind(...entries.map((e) => e.id), Date.now())
+        .run();
+    }
+    throw err;
+  }
 });
 
 time.delete('/api/time/:id', async (c) => {
