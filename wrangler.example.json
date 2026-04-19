@@ -1,0 +1,38 @@
+{
+  "_comment": "Template for forkers. Copy to wrangler.json, fill in your values, run wrangler d1 create mybooks + wrangler d1 execute mybooks --file=migrations/0001_init.sql (and 0002), then wrangler deploy. Secrets (STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET, SENDGRID_API_KEY, DEV_EMAIL, ADMIN_API_TOKEN, ADMIN_EMAIL, AUTH_SECRET, DEV_MODE) go via `wrangler secret put NAME`, never here.",
+  "name": "mybooks",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat_v2"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "upload_source_maps": true,
+  "vars": {
+    "APP_NAME": "YourCo Billing",
+    "APP_DOMAIN": "billing.example.com",
+    "SENDGRID_FROM": "Billing <noreply@example.com>"
+  },
+  "browser": {
+    "binding": "MYBROWSER"
+  },
+  "assets": {
+    "directory": "admin/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "html_handling": "auto-trailing-slash",
+    "run_worker_first": ["/api/*", "/webhook/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mybooks",
+      "database_id": "paste-from-wrangler-d1-create"
+    }
+  ],
+  "triggers": {
+    "crons": ["0 */6 * * *"]
+  }
+}

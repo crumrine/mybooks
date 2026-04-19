@@ -13,27 +13,32 @@ Forked from [Cap-go/worker-invoices](https://github.com/Cap-go/worker-invoices) 
 - SendGrid (transactional email)
 - Puppeteer on Workers (PDF rendering, inherited from fork)
 
-## Setup
+## Setup (forkers)
 
-1. `npm install`
-2. `wrangler login`
-3. Create bindings:
+This repo's committed `wrangler.json` carries the upstream deployer's values (Empro's). When you fork, replace them with your own — `wrangler.example.json` is the clean template.
+
+1. `cp wrangler.example.json wrangler.json` (overwrite) and fill in `APP_NAME`, `APP_DOMAIN`, `SENDGRID_FROM`, plus the D1 id from step 4.
+2. `npm install && (cd admin && npm install)`
+3. `wrangler login`
+4. `wrangler d1 create mybooks` → paste `database_id` into `wrangler.json`. Then:
    ```
-   wrangler kv namespace create INVOICE_STATE
-   wrangler kv namespace create INVOICE_STATE --preview
-   wrangler d1 create mybooks
+   wrangler d1 execute mybooks --remote --file=migrations/0001_init.sql
+   wrangler d1 execute mybooks --remote --file=migrations/0002_phase2_admin.sql
    ```
-   Paste the returned IDs into `wrangler.json` under `kv_namespaces` and `d1_databases`.
-4. Copy `.dev.vars.example` to `.dev.vars` and fill in:
-   - `STRIPE_API_KEY`
-   - `STRIPE_WEBHOOK_SECRET`
-   - `SENDGRID_API_KEY`
-   - `DEV_EMAIL` (where dev-mode emails get rerouted)
-5. Update `wrangler.json` `vars`:
-   - `APP_NAME`
-   - `APP_DOMAIN` (e.g. `billing.yourdomain.com`)
-   - `SENDGRID_FROM` (e.g. `Billing <noreply@yourdomain.com>`)
-6. `npm run dev` to run locally, `npm run deploy` to publish.
+5. Set secrets (never put these in `wrangler.json`):
+   ```
+   wrangler secret put STRIPE_API_KEY
+   wrangler secret put STRIPE_WEBHOOK_SECRET
+   wrangler secret put SENDGRID_API_KEY
+   wrangler secret put DEV_EMAIL
+   wrangler secret put ADMIN_API_TOKEN          # long random string
+   wrangler secret put ADMIN_EMAIL              # only this address can log in
+   wrangler secret put AUTH_SECRET              # 32+ random bytes (openssl rand -hex 48)
+   wrangler secret put DEV_MODE                 # "true" to reroute all outbound email to DEV_EMAIL
+   ```
+6. `npm run deploy` (builds the admin UI and deploys the Worker).
+7. In Stripe dashboard, add a webhook endpoint at `https://<your-domain>/webhook/stripe` listening for `charge.succeeded`. Copy the signing secret into `STRIPE_WEBHOOK_SECRET` above. The scheduled task maintains this automatically every 6 hours once `APP_DOMAIN` resolves.
+8. Visit `https://<your-domain>/admin/`, enter `ADMIN_EMAIL`, click the magic link.
 
 ## Environment
 
