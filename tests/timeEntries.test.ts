@@ -106,6 +106,16 @@ class FakeStmt {
       row.updated_at = now;
       return row as T;
     }
+    if (s.startsWith("UPDATE time_entries SET status = 'pushed'")) {
+      const [id, itemId, now] = this.args;
+      const row = this.db.store.get(id);
+      if (!row || row.status !== 'draft') return null;
+      row.status = 'pushed';
+      row.stripe_invoice_item_id = itemId;
+      row.pushed_at = now;
+      row.updated_at = now;
+      return { id } as T;
+    }
     return null;
   }
   async all<T>(): Promise<{ results: T[] }> {

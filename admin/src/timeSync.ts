@@ -30,6 +30,9 @@ export async function syncPending(): Promise<{ synced: number; failed: number }>
       for (const entry of res.entries) {
         await markSynced(entry.id, now);
       }
+      for (const entry of res.skipped ?? []) {
+        await markSynced(entry.id, now);
+      }
       return { synced: res.entries.length, failed: 0 };
     } catch (err) {
       reportClientError({

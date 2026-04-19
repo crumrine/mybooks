@@ -38,6 +38,7 @@ export default defineConfig({
               cacheName: 'clients-cache',
               networkTimeoutSeconds: 3,
               expiration: { maxEntries: 1, maxAgeSeconds: 60 * 60 * 24 },
+              cacheableResponse: { statuses: [200] },
             },
           },
         ],

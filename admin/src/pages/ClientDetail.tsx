@@ -52,7 +52,9 @@ export default function ClientDetail() {
   function load() {
     if (!id) return;
     api<ClientDetailData>(`/api/admin/clients/${id}`).then(setData).catch((e) => setError(e.message));
-    api<{ entries: TimeEntry[] }>(`/api/time?customer_id=${id}&status=draft`).then((d) => setDrafts(d.entries)).catch(() => {});
+    api<{ entries: TimeEntry[] }>(`/api/time?customer_id=${id}&status=draft`)
+      .then((d) => setDrafts(d.entries))
+      .catch((e) => setPushError(`Could not load unbilled time: ${e.message}`));
   }
 
   useEffect(load, [id]);

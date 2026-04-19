@@ -318,52 +318,76 @@ time.post('/api/time/push', async (c) => {
   const pushed: { entry_id: string; stripe_invoice_item_id: string; amount_cents: number }[] = [];
   const now = Date.now();
   const createdItemIds: string[] = [];
+  const updatedEntryIds: string[] = [];
+  let failingEntryId: string | null = null;
 
   try {
     for (const entry of entries) {
+      failingEntryId = entry.id;
       const amount = Math.round((entry.minutes / 60) * rateCents);
       const descParts = [
         entry.description || `${entry.minutes} min`,
         `(${entry.entry_date})`,
       ];
-      const item = await stripe.invoiceItems.create({
-        customer: customerId,
-        amount,
-        currency: 'usd',
-        description: descParts.join(' '),
-        metadata: { time_entry_id: entry.id },
-      });
+      const item = await stripe.invoiceItems.create(
+        {
+          customer: customerId,
+          amount,
+          currency: 'usd',
+          description: descParts.join(' '),
+          metadata: { time_entry_id: entry.id },
+        },
+        { idempotencyKey: `time_entry_push:${entry.id}` },
+      );
       createdItemIds.push(item.id);
 
-      await c.env.DB
+      const updated = await c.env.DB
         .prepare(
           `UPDATE time_entries
            SET status = 'pushed', stripe_invoice_item_id = ?2, pushed_at = ?3, updated_at = ?3
-           WHERE id = ?1 AND status = 'draft'`,
+           WHERE id = ?1 AND status = 'draft'
+           RETURNING id`,
         )
         .bind(entry.id, item.id, now)
-        .run();
+        .first<{ id: string }>();
+      if (!updated) {
+        throw new Error(`D1 update failed for entry ${entry.id} (race or status change)`);
+      }
+      updatedEntryIds.push(entry.id);
 
       pushed.push({ entry_id: entry.id, stripe_invoice_item_id: item.id, amount_cents: amount });
+      failingEntryId = null;
     }
     log.info('time_entries_pushed', { customer_id: customerId, count: pushed.length, total_cents: pushed.reduce((s, p) => s + p.amount_cents, 0) });
     return c.json({ customer_id: customerId, pushed });
   } catch (err) {
-    log.error('time_push_failed', { ...describeError(err), customer_id: customerId, entry_count: entries.length, created_item_ids: createdItemIds });
+    log.error('time_push_failed', {
+      ...describeError(err),
+      customer_id: customerId,
+      failing_entry_id: failingEntryId,
+      created_item_ids: createdItemIds,
+      updated_entry_ids: updatedEntryIds,
+    });
     for (const id of createdItemIds) {
-      try { await stripe.invoiceItems.del(id); } catch {}
+      try { await stripe.invoiceItems.del(id); } catch (delErr) {
+        log.error('rollback_item_del_failed', { ...describeError(delErr), invoice_item_id: id });
+      }
     }
-    if (createdItemIds.length > 0) {
-      const idArgs = entries.map((_, i) => `?${i + 1}`).join(',');
-      const tsPlaceholder = `?${entries.length + 1}`;
-      await c.env.DB
-        .prepare(
-          `UPDATE time_entries
-           SET status = 'draft', stripe_invoice_item_id = NULL, pushed_at = NULL, updated_at = ${tsPlaceholder}
-           WHERE id IN (${idArgs}) AND status = 'pushed'`,
-        )
-        .bind(...entries.map((e) => e.id), Date.now())
-        .run();
+    if (updatedEntryIds.length > 0) {
+      try {
+        const idArgs = updatedEntryIds.map((_, i) => `?${i + 1}`).join(',');
+        const tsPlaceholder = `?${updatedEntryIds.length + 1}`;
+        await c.env.DB
+          .prepare(
+            `UPDATE time_entries
+             SET status = 'draft', stripe_invoice_item_id = NULL, pushed_at = NULL, updated_at = ${tsPlaceholder}
+             WHERE id IN (${idArgs}) AND status = 'pushed'`,
+          )
+          .bind(...updatedEntryIds, Date.now())
+          .run();
+      } catch (rbErr) {
+        log.error('rollback_d1_revert_failed', { ...describeError(rbErr), updated_entry_ids: updatedEntryIds });
+      }
     }
     throw err;
   }

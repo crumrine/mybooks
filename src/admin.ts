@@ -335,7 +335,6 @@ admin.post('/api/admin/clients/:id/invoice', async (c) => {
     description: string;
     currency?: string;
     send_email?: boolean;
-    auto_advance?: boolean;
   };
   try {
     body = await c.req.json();
@@ -367,7 +366,7 @@ admin.post('/api/admin/clients/:id/invoice', async (c) => {
 
     const invoice = await stripe.invoices.create({
       customer: customerId,
-      auto_advance: body.auto_advance ?? true,
+      auto_advance: false,
       collection_method: 'send_invoice',
       days_until_due: 14,
       pending_invoice_items_behavior: 'include',
